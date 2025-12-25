@@ -33,3 +33,4 @@ C:\AssetCentre\DataExport\project\BackendServer\obj\Debug\net8.0\refint\BackendS
 C:\AssetCentre\DataExport\project\BackendServer\obj\Debug\net8.0\BackendServer.pdb
 C:\AssetCentre\DataExport\project\BackendServer\obj\Debug\net8.0\BackendServer.genruntimeconfig.cache
 C:\AssetCentre\DataExport\project\BackendServer\obj\Debug\net8.0\ref\BackendServer.dll
+C:\AssetCentre\DataExport\project\BackendServer\obj\Debug\net8.0\BackendServer.sourcelink.json

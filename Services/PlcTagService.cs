@@ -1,6 +1,9 @@
+// Services/PlcTagService.cs
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
 using libplctag;
 using PlcTagApi.Models;
 
@@ -11,18 +14,25 @@ namespace PlcTagApi.Services
         TagValue ReadTag(string tagName, string tagType, int arraySize = 0);
         TagResponse GetAllMonitoredTags();
         bool TestConnection();
+
+        Task<TagValue> ReadTagFromPLC(string plcName, string tagName, string tagType, int arraySize = 0);
+        Task<List<TagValue>> ReadMultipleTagsFromPLC(string plcName, string[] tagNames, string[] tagTypes, int[] arraySizes);
+        Task<bool> TestPLCConnection(string plcName);
+        Task<List<TagValue>> MonitorTagsWithConditions(string plcName, TagCondition[] conditions);
     }
 
     public class PlcTagService : IPlcTagService
     {
-        private const string GATEWAY = "10.44.189.226";  // Thay bằng IP PLC của bạn
+        private const string GATEWAY = "10.44.189.226";
         private const string PATH = "1,0";
         private const int TIMEOUT_SECONDS = 5;
 
         private readonly Dictionary<string, TagValue> _tagCache = new();
+        private readonly IPLCConnectionPool _connectionPool;
 
-        public PlcTagService()
+        public PlcTagService(IPLCConnectionPool connectionPool)
         {
+            _connectionPool = connectionPool;
             InitializeMonitoredTags();
         }
 
@@ -32,6 +42,8 @@ namespace PlcTagApi.Services
             _tagCache["x"] = new TagValue { TagName = "x", TagType = "DINT", Status = "INITIALIZING" };
             _tagCache["array_dint"] = new TagValue { TagName = "array_dint", TagType = "ARRAY", Status = "INITIALIZING" };
         }
+
+        #region Original Methods (Default PLC)
 
         public bool TestConnection()
         {
@@ -122,6 +134,141 @@ namespace PlcTagApi.Services
             return response;
         }
 
+        #endregion
+
+        #region New Methods (Multi-PLC Support)
+
+        public async Task<bool> TestPLCConnection(string plcName)
+        {
+            return await _connectionPool.TestConnection(plcName);
+        }
+
+        public async Task<TagValue> ReadTagFromPLC(string plcName, string tagName, string tagType, int arraySize = 0)
+        {
+            Tag tag = null;
+            var result = new TagValue { TagName = tagName, TagType = tagType };
+
+            try
+            {
+                tag = _connectionPool.CreateTag(plcName, tagName);
+                tag.Initialize();
+                tag.Read();
+
+                switch (tagType.ToUpper())
+                {
+                    case "BOOL":
+                        result.CurrentValue = tag.GetUInt8(0) != 0;
+                        break;
+
+                    case "DINT":
+                        result.CurrentValue = tag.GetInt32(0);
+                        break;
+
+                    case "REAL":
+                        result.CurrentValue = tag.GetFloat32(0);
+                        break;
+
+                    case "STRING":
+                        result.CurrentValue = ReadStringValue(tag, 82);
+                        break;
+
+                    case "ARRAY":
+                        result.CurrentValue = ReadArrayValues(tag, arraySize);
+                        break;
+
+                    default:
+                        throw new InvalidOperationException($"Loại tag không được hỗ trợ: {tagType}");
+                }
+
+                result.Status = "OK";
+                result.LastChanged = DateTime.Now;
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                result.Status = "ERROR";
+                result.ErrorMessage = ex.Message;
+                return result;
+            }
+            finally
+            {
+                tag?.Dispose();
+            }
+        }
+
+        public async Task<List<TagValue>> ReadMultipleTagsFromPLC(
+            string plcName, 
+            string[] tagNames, 
+            string[] tagTypes, 
+            int[] arraySizes)
+        {
+            var results = new List<TagValue>();
+
+            if (tagNames.Length != tagTypes.Length)
+                throw new ArgumentException("Số lượng tagNames và tagTypes phải bằng nhau");
+
+            for (int i = 0; i < tagNames.Length; i++)
+            {
+                int arraySize = (arraySizes != null && i < arraySizes.Length) ? arraySizes[i] : 0;
+                var tagValue = await ReadTagFromPLC(plcName, tagNames[i], tagTypes[i], arraySize);
+                results.Add(tagValue);
+            }
+
+            return results;
+        }
+
+        public async Task<List<TagValue>> MonitorTagsWithConditions(
+            string plcName, 
+            TagCondition[] conditions)
+        {
+            var results = new List<TagValue>();
+
+            foreach (var condition in conditions)
+            {
+                var tagValue = await ReadTagFromPLC(plcName, condition.TagName, "DINT");
+
+                if (tagValue.Status == "OK")
+                {
+                    bool conditionMet = EvaluateCondition(tagValue.CurrentValue, condition);
+                    
+                    tagValue.ErrorMessage = conditionMet 
+                        ? $"✓ Điều kiện {condition.ConditionType} được thỏa mãn" 
+                        : $"✗ Điều kiện {condition.ConditionType} không được thỏa mãn";
+                }
+
+                results.Add(tagValue);
+            }
+
+            return results;
+        }
+
+        private bool EvaluateCondition(object value, TagCondition condition)
+        {
+            try
+            {
+                double numValue = Convert.ToDouble(value);
+
+                return condition.ConditionType.ToLower() switch
+                {
+                    "greaterthan" => numValue > Convert.ToDouble(condition.ThresholdValue),
+                    "lessthan" => numValue < Convert.ToDouble(condition.ThresholdValue),
+                    "equal" => Math.Abs(numValue - Convert.ToDouble(condition.ThresholdValue)) < 0.0001,
+                    "between" => numValue >= Convert.ToDouble(condition.MinValue) && 
+                                 numValue <= Convert.ToDouble(condition.MaxValue),
+                    _ => false
+                };
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        #endregion
+
+        #region Helper Methods
+
         private string ReadStringValue(Tag tag, int bufferSize)
         {
             int stringLength = tag.GetInt32(0);
@@ -173,5 +320,7 @@ namespace PlcTagApi.Services
                 Timeout = TimeSpan.FromSeconds(TIMEOUT_SECONDS)
             };
         }
+
+        #endregion
     }
 }
