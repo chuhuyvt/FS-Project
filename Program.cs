@@ -1,11 +1,21 @@
-using PlcTagApi.Services;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection;
+using PlcTagApi.Core.Interfaces;  // ← ADD THIS
+using PlcTagApi.Infrastructure.Implementations;
+using PlcTagApi.Infrastructure.Validators;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container
-builder.Services.AddScoped<IPlcTagService, PlcTagService>();
-builder.Services.AddSingleton<IPLCConnectionPool, PLCConnectionPool>();
+// Register validators
+builder.Services.AddSingleton<IPlcConnectionValidator, PlcConnectionValidator>();
 
+// Register connection pool (singleton - shared across requests)
+builder.Services.AddSingleton<IPlcConnectionPool, PLCConnectionPool>();
+
+// Register tag services (transient - new instance per request)
+builder.Services.AddTransient<IPLCTagReader, PlcTagReader>();
+builder.Services.AddTransient<IPLCTagMonitor, PlcTagMonitor>();
+builder.Services.AddTransient<IPlcTagService, PlcTagService>();  
 builder.Services.AddControllers();
 
 builder.Services.AddCors(options =>
